@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PyTorch Compilation Deep Dive</title>
+  <meta name="description" content="Learn PyTorch eager mode, torch.compile, forward/backward computation graphs, and kernel fusion explained simply with stunning visuals." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --bg2: #0f0f1a;
+      --bg3: #141428;
+      --card: #12121e;
+      --card2: #181830;
+      --border: rgba(120, 100, 255, 0.18);
+      --purple: #7c4dff;
+      --purple2: #b47fff;
+      --blue: #2979ff;
+      --cyan: #00e5ff;
+      --green: #00e676;
+      --orange: #ff6d00;
+      --red: #ff1744;
+      --yellow: #ffd600;
+      --text: #e8e8f5;
+      --muted: #8888aa;
+      --mono: 'JetBrains Mono', monospace;
+      --sans: 'Inter', sans-serif;
+      --grotesk: 'Space Grotesk', sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body { background: var(--bg); color: var(--text); font-family: var(--sans); line-height: 1.7; overflow-x: hidden; }
+    .hero {
+      min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      text-align: center; position: relative; overflow: hidden; padding: 2rem;
+    }
+    .hero::before {
+      content: ''; position: absolute; inset: 0;
+      background: radial-gradient(ellipse 80% 60% at 50% -10%, rgba(124,77,255,0.35) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 40% at 20% 80%, rgba(41,121,255,0.2) 0%, transparent 50%),
+        radial-gradient(ellipse 50% 30% at 80% 80%, rgba(0,229,255,0.15) 0%, transparent 50%);
+      pointer-events: none;
+    }
+    .hero::after {
+      content: ''; position: absolute; inset: 0;
+      background-image: linear-gradient(rgba(120,100,255,0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(120,100,255,0.07) 1px, transparent 1px);
+      background-size: 50px 50px; animation: gridMove 20s linear infinite; pointer-events: none;
+    }
+    @keyframes gridMove { 0% { background-position: 0 0; } 100% { background-position: 50px 50px; } }
+    .hero-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: rgba(124,77,255,0.15); border: 1px solid rgba(124,77,255,0.4); border-radius: 100px;
+      padding: 6px 18px; font-size: 0.78rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--purple2); margin-bottom: 2rem; position: relative; z-index: 1;
+      animation: fadeSlideDown 0.8s ease both;
+    }
+    .hero-badge::before { content: ''; width: 8px; height: 8px; background: var(--green); border-radius: 50%; animation: pulse 2s ease infinite; }
+    @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(0,230,118,0.6); } 50% { box-shadow: 0 0 0 8px rgba(0,230,118,0); } }
+    .hero h1 {
+      font-family: var(--grotesk); font-size: clamp(2.4rem, 7vw, 5.5rem); font-weight: 800;
+      line-height: 1.05; letter-spacing: -0.03em; position: relative; z-index: 1;
+      animation: fadeSlideDown 0.9s 0.1s ease both;
+    }
+    .hero h1 .grad {
+      background: linear-gradient(135deg, #b47fff 0%, #7c4dff 40%, #2979ff 70%, #00e5ff 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .hero-sub {
+      font-size: clamp(1rem, 2.5vw, 1.3rem); color: var(--muted); max-width: 700px; margin: 1.5rem auto 0;
+      position: relative; z-index: 1; animation: fadeSlideDown 1s 0.2s ease both;
+    }
+    .hero-chips {
+      display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 2rem;
+      position: relative; z-index: 1; animation: fadeSlideDown 1.1s 0.3s ease both;
+    }
+    .chip {
+      background: var(--card2); border: 1px solid var(--border); border-radius: 8px;
+      padding: 6px 16px; font-size: 0.85rem; font-weight: 500; color: var(--purple2);
+      transition: all 0.25s ease; cursor: default;
+    }
+    .chip:hover { background: rgba(124,77,255,0.2); border-color: rgba(124,77,255,0.5); transform: translateY(-2px); }
+    .scroll-cta {
+      position: relative; z-index: 1; margin-top: 3rem; animation: fadeSlideDown 1.2s 0.5s ease both;
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      color: var(--muted); font-size: 0.8rem; letter-spacing: 0.1em; text-transform: uppercase;
+    }
+    .scroll-arrow {
+      width: 30px; height: 30px; border: 2px solid rgba(124,77,255,0.4); border-radius: 50%;
+      display: flex; align-items: center; justify-content: center; animation: bounceDown 1.5s ease infinite;
+    }
+    @keyframes bounceDown { 0%,100% { transform: translateY(0); } 50% { transform: translateY(6px); } }
+    @keyframes fadeSlideDown { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
+    nav {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(10,10,15,0.85); backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border); padding: 0 2rem;
+    }
+    .nav-inner {
+      max-width: 1100px; margin: 0 auto; display: flex; align-items: center;
+      overflow-x: auto; scrollbar-width: none;
+    }
+    .nav-inner::-webkit-scrollbar { display: none; }
+    .nav-link {
+      display: flex; align-items: center; gap: 6px; padding: 1rem 1.1rem;
+      font-size: 0.82rem; font-weight: 500; color: var(--muted);
+      text-decoration: none; border-bottom: 2px solid transparent; white-space: nowrap; transition: all 0.2s ease;
+    }
+    .nav-link:hover, .nav-link.active { color: var(--purple2); border-bottom-color: var(--purple); }
+    main { max-width: 1100px; margin: 0 auto; padding: 0 2rem 6rem; }
+    section { padding-top: 5rem; margin-top: -1rem; }
+    .section-label { display: inline-flex; align-items: center; gap: 8px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--purple2); margin-bottom: 0.8rem; }
+    .section-label .dot { width: 6px; height: 6px; background: var(--purple); border-radius: 50%; }
+    h2 { font-family: var(--grotesk); font-size: clamp(1.8rem, 4vw, 2.6rem); font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.6rem; line-height: 1.15; }
+    .section-intro { font-size: 1.05rem; color: var(--muted); max-width: 680px; margin-bottom: 2.5rem; line-height: 1.8; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 2rem; transition: all 0.3s ease; position: relative; overflow: hidden; }
+    .card::before { content: ''; position: absolute; inset: 0; background: radial-gradient(ellipse 80% 60% at 50% -20%, rgba(124,77,255,0.06), transparent); pointer-events: none; }
+    .card:hover { border-color: rgba(124,77,255,0.35); transform: translateY(-3px); box-shadow: 0 20px 60px rgba(124,77,255,0.1); }
+    .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.2rem; }
+    .code-block { background: #090910; border: 1px solid rgba(120,100,255,0.2); border-radius: 12px; overflow: hidden; font-family: var(--mono); font-size: 0.88rem; margin: 1.5rem 0; }
+    .code-header { background: rgba(124,77,255,0.1); border-bottom: 1px solid rgba(124,77,255,0.15); padding: 0.6rem 1.2rem; display: flex; align-items: center; gap: 8px; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.05em; color: var(--purple2); }
+    .code-dot { width: 10px; height: 10px; border-radius: 50%; }
+    .code-dot.r { background: #ff5f57; } .code-dot.y { background: #ffbd2e; } .code-dot.g { background: #28c840; }
+    pre { padding: 1.4rem; overflow-x: auto; line-height: 1.7; color: #c9d1d9; }
+    .kw { color: #c678dd; } .fn { color: #61afef; } .str { color: #98c379; } .num { color: #d19a66; }
+    .cm { color: #5c6370; font-style: italic; } .dec { color: #e5c07b; } .op { color: #56b6c2; }
+    .compare-table { width: 100%; border-collapse: collapse; border-radius: 12px; overflow: hidden; font-size: 0.9rem; }
+    .compare-table th { background: rgba(124,77,255,0.15); padding: 1rem 1.4rem; text-align: left; font-weight: 600; font-size: 0.8rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--purple2); border-bottom: 1px solid var(--border); }
+    .compare-table td { padding: 0.9rem 1.4rem; border-bottom: 1px solid rgba(120,100,255,0.08); vertical-align: top; }
+    .compare-table tr:last-child td { border-bottom: none; }
+    .compare-table tr:hover td { background: rgba(124,77,255,0.04); }
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 100px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; }
+    .badge-green { background: rgba(0,230,118,0.15); color: var(--green); }
+    .badge-red   { background: rgba(255,23,68,0.15);  color: var(--red); }
+    .badge-yellow{ background: rgba(255,214,0,0.15);  color: var(--yellow); }
+    .badge-blue  { background: rgba(41,121,255,0.15); color: #64b5f6; }
+    .flow { display: flex; align-items: center; flex-wrap: wrap; gap: 0; margin: 2rem 0; justify-content: center; }
+    .flow-node { background: var(--card2); border: 1px solid var(--border); border-radius: 10px; padding: 0.8rem 1.3rem; font-size: 0.85rem; font-weight: 600; text-align: center; min-width: 120px; transition: all 0.3s ease; }
+    .flow-node:hover { border-color: rgba(124,77,255,0.5); box-shadow: 0 0 20px rgba(124,77,255,0.2); }
+    .flow-node .sub { font-size: 0.7rem; font-weight: 400; color: var(--muted); margin-top: 3px; }
+    .flow-arrow { color: var(--purple2); font-size: 1.4rem; padding: 0 4px; animation: arrowPulse 2s ease infinite; }
+    @keyframes arrowPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+    .flow-node.highlight { background: rgba(124,77,255,0.15); border-color: rgba(124,77,255,0.5); }
+    .flow-node.green-hl { background: rgba(0,230,118,0.1); border-color: rgba(0,230,118,0.4); color: var(--green); }
+    .flow-node.blue-hl  { background: rgba(41,121,255,0.1); border-color: rgba(41,121,255,0.4); color: #64b5f6; }
+    .flow-node.orange-hl{ background: rgba(255,109,0,0.1); border-color: rgba(255,109,0,0.4); color: var(--orange); }
+    .callout { border-left: 4px solid; border-radius: 0 10px 10px 0; padding: 1rem 1.4rem; margin: 1.5rem 0; font-size: 0.92rem; }
+    .callout-info { border-color: var(--blue); background: rgba(41,121,255,0.07); }
+    .callout-warn { border-color: var(--yellow); background: rgba(255,214,0,0.07); }
+    .callout-tip  { border-color: var(--green); background: rgba(0,230,118,0.07); }
+    .callout-key  { border-color: var(--purple); background: rgba(124,77,255,0.07); }
+    .callout strong { display: block; margin-bottom: 4px; font-size: 0.78rem; letter-spacing: 0.1em; text-transform: uppercase; }
+    .callout-info strong { color: #64b5f6; }
+    .callout-warn strong { color: var(--yellow); }
+    .callout-tip  strong { color: var(--green); }
+    .callout-key  strong { color: var(--purple2); }
+    .icon-card { display: flex; gap: 1.2rem; align-items: flex-start; background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 1.4rem; transition: all 0.3s ease; }
+    .icon-card:hover { border-color: rgba(124,77,255,0.4); transform: translateX(4px); }
+    .icon-circle { width: 48px; height: 48px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.4rem; flex-shrink: 0; }
+    .icon-circle.purple { background: rgba(124,77,255,0.2); }
+    .icon-circle.blue   { background: rgba(41,121,255,0.2); }
+    .icon-circle.green  { background: rgba(0,230,118,0.15); }
+    .icon-circle.orange { background: rgba(255,109,0,0.15); }
+    .icon-circle.cyan   { background: rgba(0,229,255,0.15); }
+    .icon-card h3 { font-size: 1rem; font-weight: 700; margin-bottom: 4px; }
+    .icon-card p  { font-size: 0.88rem; color: var(--muted); line-height: 1.65; }
+    .fusion-demo { background: #090910; border: 1px solid var(--border); border-radius: 16px; padding: 2rem; margin: 2rem 0; }
+    .fusion-demo h3 { font-family: var(--mono); font-size: 0.85rem; color: var(--muted); margin-bottom: 1.5rem; letter-spacing: 0.08em; }
+    .kernel-row { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+    .kernel-box { height: 48px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 0.78rem; font-weight: 600; padding: 0 14px; white-space: nowrap; border: 1px solid transparent; transition: all 0.4s ease; }
+    .k-op    { background: rgba(124,77,255,0.2); border-color: rgba(124,77,255,0.4); color: var(--purple2); }
+    .k-mem   { background: rgba(255,109,0,0.15); border-color: rgba(255,109,0,0.35); color: var(--orange); }
+    .k-fused { background: rgba(0,230,118,0.12); border-color: rgba(0,230,118,0.4); color: var(--green); }
+    .k-arrow { font-size: 1.1rem; color: var(--muted); }
+    .k-label { font-size: 0.72rem; color: var(--muted); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; min-width: 80px; }
+    .mem-bar { height: 14px; border-radius: 100px; overflow: hidden; background: rgba(255,255,255,0.05); flex: 1; min-width: 120px; }
+    .mem-fill { height: 100%; border-radius: 100px; animation: fillBar 2s ease-in-out infinite alternate; }
+    .mem-fill.eager { background: linear-gradient(90deg, #ff6d00, #ff1744); width: 85%; }
+    .mem-fill.fused { background: linear-gradient(90deg, #00e676, #00b0ff); width: 28%; }
+    @keyframes fillBar { from { opacity: 0.7; } to { opacity: 1; } }
+    .label-small { font-size: 0.72rem; color: var(--muted); margin-left: 8px; }
+    .graph-canvas { background: #090910; border: 1px solid var(--border); border-radius: 16px; padding: 2.5rem 2rem; margin: 2rem 0; display: flex; flex-direction: column; align-items: center; }
+    .g-node { background: var(--card2); border: 1px solid; border-radius: 10px; padding: 0.6rem 1.4rem; font-family: var(--mono); font-size: 0.82rem; font-weight: 600; text-align: center; min-width: 140px; transition: all 0.3s ease; }
+    .g-node:hover { transform: scale(1.05); }
+    .g-node.input     { border-color: rgba(0,229,255,0.5); color: var(--cyan); background: rgba(0,229,255,0.07); }
+    .g-node.op-node   { border-color: rgba(124,77,255,0.5); color: var(--purple2); background: rgba(124,77,255,0.1); }
+    .g-node.output    { border-color: rgba(0,230,118,0.5); color: var(--green); background: rgba(0,230,118,0.07); }
+    .g-node.loss-node { border-color: rgba(255,109,0,0.5); color: var(--orange); background: rgba(255,109,0,0.08); }
+    .g-node.grad-node { border-color: rgba(41,121,255,0.5); color: #64b5f6; background: rgba(41,121,255,0.08); }
+    .g-connector { display: flex; flex-direction: column; align-items: center; color: var(--muted); font-size: 0.75rem; padding: 4px 0; }
+    .g-connector span { color: var(--muted); font-size: 1.2rem; }
+    .g-connector small { font-size: 0.68rem; letter-spacing: 0.08em; }
+    .g-row { display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; justify-content: center; }
+    .highlight-box { background: linear-gradient(135deg, rgba(124,77,255,0.12), rgba(41,121,255,0.08)); border: 1px solid rgba(124,77,255,0.3); border-radius: 12px; padding: 1.4rem 1.8rem; margin: 2rem 0; }
+    .highlight-box h3 { font-size: 1rem; font-weight: 700; margin-bottom: 0.8rem; color: var(--purple2); }
+    ul.custom { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    ul.custom li { display: flex; align-items: flex-start; gap: 10px; font-size: 0.9rem; color: var(--text); }
+    ul.custom li::before { content: '&#9658;'; color: var(--purple2); flex-shrink: 0; margin-top: 1px; }
+    .steps { display: flex; flex-direction: column; gap: 0; position: relative; }
+    .steps::before { content: ''; position: absolute; left: 22px; top: 24px; bottom: 24px; width: 2px; background: linear-gradient(180deg, var(--purple) 0%, var(--cyan) 100%); }
+    .step { display: flex; gap: 1.5rem; align-items: flex-start; padding: 0 0 2rem; }
+    .step-num { width: 46px; height: 46px; border-radius: 50%; border: 2px solid var(--purple); background: var(--bg); display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 0.9rem; flex-shrink: 0; position: relative; z-index: 1; color: var(--purple2); }
+    .step-content h3 { font-size: 1.05rem; font-weight: 700; margin-bottom: 4px; }
+    .step-content p  { font-size: 0.88rem; color: var(--muted); line-height: 1.7; }
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+    .stat-card { background: var(--card2); border: 1px solid var(--border); border-radius: 12px; padding: 1.2rem; text-align: center; transition: all 0.3s ease; }
+    .stat-card:hover { border-color: rgba(124,77,255,0.4); transform: translateY(-2px); }
+    .stat-card .stat-val { font-size: 2rem; font-weight: 800; font-family: var(--grotesk); }
+    .stat-card .stat-lbl { font-size: 0.75rem; color: var(--muted); margin-top: 4px; font-weight: 500; }
+    footer { text-align: center; border-top: 1px solid var(--border); padding: 3rem 2rem; color: var(--muted); font-size: 0.85rem; }
+    footer .logo { font-family: var(--grotesk); font-size: 1.3rem; font-weight: 800; background: linear-gradient(135deg, var(--purple2), var(--cyan)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; margin-bottom: 0.5rem; }
+    .glow-line { height: 1px; background: linear-gradient(90deg, transparent 0%, rgba(124,77,255,0.6) 50%, transparent 100%); margin: 4rem 0; }
+    .toc { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 2rem; margin: 3rem 0; }
+    .toc h2 { font-size: 1.2rem; margin-bottom: 1.2rem; }
+    .toc-items { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.5rem; }
+    .toc-item { display: flex; align-items: center; gap: 10px; padding: 0.6rem 0.8rem; border-radius: 8px; text-decoration: none; color: var(--muted); font-size: 0.88rem; font-weight: 500; transition: all 0.2s ease; }
+    .toc-item:hover { background: rgba(124,77,255,0.1); color: var(--purple2); }
+    .toc-num { color: var(--purple); font-size: 0.75rem; font-weight: 700; font-family: var(--mono); }
+    .blob { position: fixed; border-radius: 50%; filter: blur(80px); opacity: 0.06; pointer-events: none; z-index: 0; animation: blobMove 15s ease infinite alternate; }
+    .blob1 { width: 500px; height: 500px; background: var(--purple); top: -100px; left: -100px; }
+    .blob2 { width: 400px; height: 400px; background: var(--blue); bottom: 200px; right: -50px; animation-delay: -5s; }
+    .blob3 { width: 300px; height: 300px; background: var(--cyan); top: 50%; left: 50%; animation-delay: -10s; }
+    @keyframes blobMove { 0% { transform: translate(0,0) scale(1); } 100% { transform: translate(40px,40px) scale(1.1); } }
+    .read-progress { position: fixed; top: 0; left: 0; height: 3px; background: linear-gradient(90deg, var(--purple), var(--cyan)); z-index: 200; transition: width 0.1s linear; }
+    @media (max-width: 640px) {
+      main { padding: 0 1rem 4rem; }
+      pre { font-size: 0.78rem; }
+      .compare-table { font-size: 0.8rem; }
+      .compare-table th, .compare-table td { padding: 0.7rem 0.9rem; }
+    }
+  </style>
+</head>
+<body>
+<div class="blob blob1"></div>
+<div class="blob blob2"></div>
+<div class="blob blob3"></div>
+<div class="read-progress" id="readProgress"></div>
+
+<!-- HERO -->
+<section class="hero" id="top">
+  <div class="hero-badge">&#128293; PyTorch Internals &middot; Deep Dive</div>
+  <h1>How PyTorch<br/><span class="grad">Actually Compiles</span><br/>Your Code</h1>
+  <p class="hero-sub">Eager Mode &#8594; Compiled Graphs &#8594; Kernel Fusion.<br/>Understand the full journey &mdash; from a simple <code style="font-family:var(--mono);font-size:0.9em;color:#b47fff;background:rgba(124,77,255,0.15);padding:2px 8px;border-radius:5px">model.forward(x)</code> to optimized GPU kernels.</p>
+  <div class="hero-chips">
+    <span class="chip">&#128034; Eager Mode</span>
+    <span class="chip">&#9889; torch.compile</span>
+    <span class="chip">&#128202; Forward Graph</span>
+    <span class="chip">&#128260; Backward Graph</span>
+    <span class="chip">&#128256; Kernel Fusion</span>
+    <span class="chip">&#129414; TorchDynamo</span>
+    <span class="chip">&#128302; AOT Autograd</span>
+  </div>
+  <div class="scroll-cta"><span>scroll to explore</span><div class="scroll-arrow">&#8595;</div></div>
+</section>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-inner">
+    <a class="nav-link" href="#top">&#127968; Home</a>
+    <a class="nav-link" href="#eager">&#128034; Eager</a>
+    <a class="nav-link" href="#compile">&#9889; Compile</a>
+    <a class="nav-link" href="#dynamo">&#129414; Dynamo</a>
+    <a class="nav-link" href="#aot">&#128302; AOT</a>
+    <a class="nav-link" href="#forward">&#128202; Forward Graph</a>
+    <a class="nav-link" href="#backward">&#128260; Backward Graph</a>
+    <a class="nav-link" href="#fusion">&#128256; Kernel Fusion</a>
+    <a class="nav-link" href="#summary">&#9989; Summary</a>
+  </div>
+</nav>
+
+<main>
+  <div class="toc">
+    <h2>&#128218; What's Covered</h2>
+    <div class="toc-items">
+      <a class="toc-item" href="#eager"><span class="toc-num">01</span> Eager Mode &mdash; The Default</a>
+      <a class="toc-item" href="#compile"><span class="toc-num">02</span> torch.compile &mdash; How It Works</a>
+      <a class="toc-item" href="#dynamo"><span class="toc-num">03</span> TorchDynamo &mdash; Tracing Python</a>
+      <a class="toc-item" href="#aot"><span class="toc-num">04</span> AOT Autograd &mdash; Joint Graph</a>
+      <a class="toc-item" href="#forward"><span class="toc-num">05</span> Forward Computation Graph</a>
+      <a class="toc-item" href="#backward"><span class="toc-num">06</span> Backward Graph &amp; Gradients</a>
+      <a class="toc-item" href="#fusion"><span class="toc-num">07</span> Kernel Fusion</a>
+      <a class="toc-item" href="#summary"><span class="toc-num">08</span> Cheat Sheet Summary</a>
+    </div>
+  </div>
+
+  <div class="glow-line"></div>
+
+  <!-- SECTION 1: EAGER MODE -->
+  <section id="eager">
+    <div class="section-label"><div class="dot"></div> Section 01</div>
+    <h2>&#128034; Eager Mode &mdash; The Default PyTorch</h2>
+    <p class="section-intro">When you write normal PyTorch code and run it, you're in <strong>eager mode</strong>. It's the "no compilation, just run it now" mode &mdash; Python runs line by line, and every operation executes immediately.</p>
+    <div class="card-grid">
+      <div class="icon-card">
+        <div class="icon-circle purple">&#9889;</div>
+        <div><h3>Immediate Execution</h3><p>Each PyTorch operation (add, matmul, relu) runs on the GPU immediately when Python hits that line. No waiting, no planning ahead.</p></div>
+      </div>
+      <div class="icon-card">
+        <div class="icon-circle blue">&#128013;</div>
+        <div><h3>Python Controls Everything</h3><p>Python's interpreter is the "driver" &mdash; it calls into CUDA/C++ for each op. This means Python overhead on every single operation.</p></div>
+      </div>
+      <div class="icon-card">
+        <div class="icon-circle green">&#128269;</div>
+        <div><h3>Easy to Debug</h3><p>You can print tensors, add breakpoints, inspect shapes anytime. This is why eager mode is amazing for research and experimentation.</p></div>
+      </div>
+    </div>
+    <div class="code-block">
+      <div class="code-header"><div class="code-dot r"></div><div class="code-dot y"></div><div class="code-dot g"></div>eager_mode.py &mdash; Normal PyTorch (Eager)</div>
+      <pre><span class="kw">import</span> torch
+<span class="kw">import</span> torch.nn <span class="kw">as</span> nn
+
+<span class="kw">class</span> <span class="dec">TinyNet</span>(nn.Module):
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="op">self</span>):
+        <span class="fn">super</span>().<span class="fn">__init__</span>()
+        <span class="op">self</span>.linear1 = nn.<span class="fn">Linear</span>(<span class="num">512</span>, <span class="num">256</span>)
+        <span class="op">self</span>.relu    = nn.<span class="fn">ReLU</span>()
+        <span class="op">self</span>.linear2 = nn.<span class="fn">Linear</span>(<span class="num">256</span>, <span class="num">10</span>)
+
+    <span class="kw">def</span> <span class="fn">forward</span>(<span class="op">self</span>, x):
+        <span class="cm"># Python executes this line -&gt; calls CUDA matmul RIGHT NOW</span>
+        x = <span class="op">self</span>.<span class="fn">linear1</span>(x)
+        <span class="cm"># Python executes this line -&gt; calls CUDA relu RIGHT NOW</span>
+        x = <span class="op">self</span>.<span class="fn">relu</span>(x)
+        <span class="cm"># Python executes this line -&gt; calls CUDA matmul RIGHT NOW</span>
+        x = <span class="op">self</span>.<span class="fn">linear2</span>(x)
+        <span class="kw">return</span> x
+
+model = <span class="fn">TinyNet</span>().<span class="fn">cuda</span>()
+x     = torch.<span class="fn">randn</span>(<span class="num">32</span>, <span class="num">512</span>).<span class="fn">cuda</span>()
+output = <span class="fn">model</span>(x)  <span class="cm"># Python -&gt; CUDA -&gt; Python -&gt; CUDA -&gt; ...</span></pre>
+    </div>
+    <p style="font-size:0.85rem;color:var(--muted);margin-bottom:0.8rem;">How Python drives each op in eager mode:</p>
+    <div class="flow">
+      <div class="flow-node blue-hl">Python<div class="sub">interpreter</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node highlight">PyTorch Op<div class="sub">linear1(x)</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node orange-hl">CUDA Kernel<div class="sub">runs on GPU</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node blue-hl">Python<div class="sub">back to driver</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node highlight">Next Op<div class="sub">relu(x)</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node orange-hl">CUDA Kernel<div class="sub">runs again</div></div>
+    </div>
+    <div class="callout callout-warn"><strong>&#9888;&#65039; The Problem with Eager Mode</strong>For every single operation, Python has to wake up, schedule the CUDA call, and then wait. This Python &harr; GPU round-trip overhead adds up &mdash; especially in large models. The GPU also can't "see ahead" to optimize across operations.</div>
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-val" style="color:var(--red)">1:1</div><div class="stat-lbl">Python call per GPU op</div></div>
+      <div class="stat-card"><div class="stat-val" style="color:var(--yellow)">~&#956;s</div><div class="stat-lbl">Python overhead per op</div></div>
+      <div class="stat-card"><div class="stat-val" style="color:var(--green)">&#10003;</div><div class="stat-lbl">Easy to debug &amp; inspect</div></div>
+      <div class="stat-card"><div class="stat-val" style="color:var(--blue)">0</div><div class="stat-lbl">Cross-op optimizations</div></div>
+    </div>
+  </section>
+
+  <div class="glow-line"></div>
+
+  <!-- SECTION 2: TORCH.COMPILE -->
+  <section id="compile">
+    <div class="section-label"><div class="dot"></div> Section 02</div>
+    <h2>&#9889; <code style="font-size:0.9em">torch.compile</code> &mdash; One Line, Massive Speedup</h2>
+    <p class="section-intro">Introduced in PyTorch 2.0, <code>torch.compile(model)</code> wraps your model so that instead of running Python eagerly, PyTorch <em>traces</em> what your code does and compiles it into an optimized computation graph &mdash; all automatically.</p>
+    <div class="code-block">
+      <div class="code-header"><div class="code-dot r"></div><div class="code-dot y"></div><div class="code-dot g"></div>compiled_mode.py &mdash; torch.compile in action</div>
+      <pre><span class="kw">import</span> torch
+
+model  = <span class="fn">TinyNet</span>().<span class="fn">cuda</span>()
+x      = torch.<span class="fn">randn</span>(<span class="num">32</span>, <span class="num">512</span>).<span class="fn">cuda</span>()
+
+<span class="cm"># The MAGIC line</span>
+compiled_model = torch.<span class="fn">compile</span>(model)
+
+<span class="cm"># First call: PyTorch TRACES and COMPILES (takes a moment)</span>
+output = <span class="fn">compiled_model</span>(x)
+
+<span class="cm"># Subsequent calls: runs the OPTIMIZED compiled graph</span>
+output = <span class="fn">compiled_model</span>(x)  <span class="cm"># blazing fast!</span>
+
+<span class="cm"># Backend options:</span>
+compiled_model = torch.<span class="fn">compile</span>(model, backend=<span class="str">"inductor"</span>)     <span class="cm"># default</span>
+compiled_model = torch.<span class="fn">compile</span>(model, mode=<span class="str">"reduce-overhead"</span>) <span class="cm"># min overhead</span>
+compiled_model = torch.<span class="fn">compile</span>(model, mode=<span class="str">"max-autotune"</span>)    <span class="cm"># max perf</span></pre>
+    </div>
+    <div class="callout callout-info"><strong>&#128161; Key Insight</strong><code>torch.compile</code> is a 3-stage pipeline: <strong>TorchDynamo</strong> (tracing Python) &rarr; <strong>AOT Autograd</strong> (splitting forward/backward) &rarr; <strong>TorchInductor</strong> (code generation + kernel fusion).</div>
+    <h3 style="font-size:1.05rem;font-weight:700;margin:2rem 0 1rem;color:var(--purple2)">The 3-Stage Compilation Pipeline</h3>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <h3>&#129414; TorchDynamo &mdash; Python Bytecode Tracing</h3>
+          <p>Intercepts Python at the bytecode level. Instead of running ops immediately, it <em>watches</em> what your Python code does and records every tensor operation into an <strong>FX Graph</strong> (a clean, Python-serializable computation graph). If it hits something it can't handle, it falls back to eager gracefully.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <h3>&#128302; AOT Autograd &mdash; Ahead-of-Time Forward + Backward</h3>
+          <p>Takes the FX Graph and uses functorch to automatically derive the <strong>backward graph ahead of time</strong> &mdash; before any training step runs. Produces a <em>joint graph</em> (forward + backward) for holistic optimization.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <h3>&#127981; TorchInductor &mdash; Code Generation &amp; Kernel Fusion</h3>
+          <p>The backend compiler. Takes the optimized graph and generates <strong>highly optimized Triton/CUDA kernels</strong>. Performs kernel fusion, memory layout optimization, and auto-tuning &mdash; all automatically.</p>
+        </div>
+      </div>
+    </div>
+    <div class="flow" style="margin-top:2rem;">
+      <div class="flow-node blue-hl">Your Python<div class="sub">model.forward(x)</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node highlight">TorchDynamo<div class="sub">Traces -&gt; FX Graph</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node highlight">AOT Autograd<div class="sub">Fwd + Bwd Graphs</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node green-hl">TorchInductor<div class="sub">Kernel Fusion + CUDA</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node orange-hl">GPU &#128640;<div class="sub">Optimized Execution</div></div>
+    </div>
+  </section>
+
+  <div class="glow-line"></div>
+
+  <!-- SECTION 3: DYNAMO -->
+  <section id="dynamo">
+    <div class="section-label"><div class="dot"></div> Section 03</div>
+    <h2>&#129414; TorchDynamo &mdash; Tracing Python Safely</h2>
+    <p class="section-intro">The hardest part of compiling PyTorch wasn't making fast kernels &mdash; it was <em>tracing arbitrary Python code</em>. Users write models with if-statements, loops, lists, etc. TorchDynamo solves this brilliantly.</p>
+    <div class="card-grid">
+      <div class="icon-card">
+        <div class="icon-circle cyan">&#129693;</div>
+        <div><h3>Bytecode Hook</h3><p>TorchDynamo installs itself as a Python frame evaluation hook &mdash; it intercepts Python at the CPython bytecode level, giving it full visibility into what Python is doing.</p></div>
+      </div>
+      <div class="icon-card">
+        <div class="icon-circle purple">&#128221;</div>
+        <div><h3>Symbolic Execution</h3><p>Instead of running ops, it <em>records</em> them. Tensor operations become nodes in an FX Graph. Non-tensor code (Python math, prints) runs normally.</p></div>
+      </div>
+      <div class="icon-card">
+        <div class="icon-circle orange">&#128260;</div>
+        <div><h3>Guards &amp; Recompilation</h3><p>Dynamo records <em>guards</em> &mdash; assumptions about shapes, dtypes, values. If they break (e.g., different batch size), it recompiles for the new case. Smart caching.</p></div>
+      </div>
+    </div>
+    <div class="code-block">
+      <div class="code-header"><div class="code-dot r"></div><div class="code-dot y"></div><div class="code-dot g"></div>dynamo_tracing.py &mdash; What Dynamo captures as an FX Graph</div>
+      <pre><span class="cm"># Your original Python forward:</span>
+<span class="kw">def</span> <span class="fn">forward</span>(x, weight1, bias1, weight2, bias2):
+    x = x @ weight1 + bias1
+    x = torch.<span class="fn">relu</span>(x)
+    x = x @ weight2 + bias2
+    <span class="kw">return</span> x
+
+<span class="cm"># What TorchDynamo captures (FX Graph pseudocode):</span>
+<span class="cm">#   graph(x, weight1, bias1, weight2, bias2):</span>
+<span class="cm">#     mm_0   = aten.mm(x, weight1)</span>
+<span class="cm">#     add_0  = aten.add(mm_0, bias1)</span>
+<span class="cm">#     relu_0 = aten.relu(add_0)</span>
+<span class="cm">#     mm_1   = aten.mm(relu_0, weight2)</span>
+<span class="cm">#     add_1  = aten.add(mm_1, bias2)</span>
+<span class="cm">#     return add_1</span>
+<span class="cm">#</span>
+<span class="cm"># This FX Graph is a clean, compilable Python object</span></pre>
+    </div>
+    <div class="callout callout-tip"><strong>&#9989; Graph Breaks</strong>If Dynamo encounters something it truly can't trace (external library call, data-dependent control flow), it <em>breaks the graph</em> at that point, runs the untraceable part eagerly, and starts a new graph afterward. Your code always works &mdash; it just might not be 100% optimized at break points.</div>
+  </section>
+
+  <div class="glow-line"></div>
+
+  <!-- SECTION 4: AOT AUTOGRAD -->
+  <section id="aot">
+    <div class="section-label"><div class="dot"></div> Section 04</div>
+    <h2>&#128302; AOT Autograd &mdash; The Joint Graph</h2>
+    <p class="section-intro">After Dynamo captures the forward graph, <strong>AOT Autograd</strong> expands it to include the backward pass &mdash; all <em>before</em> the first training step. This lets the compiler see and optimize both forward and backward together.</p>
+    <div class="highlight-box">
+      <h3>Why "Ahead of Time"?</h3>
+      <ul class="custom">
+        <li>In eager mode, autograd figures out the backward pass <em>at runtime</em> as you call <code>loss.backward()</code>.</li>
+        <li>AOT Autograd uses functorch's <code>grad</code> transform to compute the backward graph <em>during compilation</em>, not runtime.</li>
+        <li>This creates a <strong>joint forward+backward graph</strong> the backend can optimize holistically &mdash; fusing ops across the boundary.</li>
+        <li>Result: the backward pass is just as compiled and fast as the forward pass.</li>
+      </ul>
+    </div>
+    <div class="code-block">
+      <div class="code-header"><div class="code-dot r"></div><div class="code-dot y"></div><div class="code-dot g"></div>aot_autograd_concept.py &mdash; Simplified view</div>
+      <pre><span class="kw">from</span> functorch.compile <span class="kw">import</span> aot_function
+<span class="kw">import</span> torch
+
+<span class="kw">def</span> <span class="fn">forward</span>(x, w):
+    <span class="kw">return</span> torch.<span class="fn">relu</span>(x @ w)
+
+<span class="cm"># AOT Autograd captures BOTH forward and backward</span>
+compiled_fn = <span class="fn">aot_function</span>(
+    forward,
+    fw_compiler=my_backend,  <span class="cm"># receives forward graph</span>
+    bw_compiler=my_backend,  <span class="cm"># receives backward graph</span>
+)
+
+x = torch.<span class="fn">randn</span>(<span class="num">4</span>, <span class="num">4</span>, requires_grad=<span class="kw">True</span>)
+w = torch.<span class="fn">randn</span>(<span class="num">4</span>, <span class="num">4</span>, requires_grad=<span class="kw">True</span>)
+
+loss = <span class="fn">compiled_fn</span>(x, w).<span class="fn">sum</span>()
+loss.<span class="fn">backward</span>()  <span class="cm"># uses the COMPILED backward graph!</span></pre>
+    </div>
+  </section>
+
+  <div class="glow-line"></div>
+
+  <!-- SECTION 5: FORWARD GRAPH -->
+  <section id="forward">
+    <div class="section-label"><div class="dot"></div> Section 05</div>
+    <h2>&#128202; The Forward Computation Graph</h2>
+    <p class="section-intro">The <strong>forward graph</strong> represents all mathematical operations from input tensor to model output. It's a directed acyclic graph (DAG) where data flows in one direction: input &rarr; transformations &rarr; output.</p>
+    <div class="card-grid">
+      <div class="icon-card">
+        <div class="icon-circle cyan">&#128229;</div>
+        <div><h3>Inputs (Leaf Nodes)</h3><p>Input tensors <code>x</code>, weight matrices, bias vectors &mdash; these are where data enters the graph. They have no predecessors.</p></div>
+      </div>
+      <div class="icon-card">
+        <div class="icon-circle purple">&#9881;&#65039;</div>
+        <div><h3>Operation Nodes</h3><p>Every <code>matmul</code>, <code>relu</code>, <code>softmax</code>, <code>layernorm</code> etc. becomes a node. Edges represent data flowing between ops.</p></div>
+      </div>
+      <div class="icon-card">
+        <div class="icon-circle green">&#128228;</div>
+        <div><h3>Output (Root Node)</h3><p>The final prediction/logits tensor. This is what gets compared against labels to compute the loss.</p></div>
+      </div>
+    </div>
+    <h3 style="font-size:1rem;font-weight:700;margin:2rem 0 0.5rem;color:var(--purple2)">Forward Graph &mdash; Visual (Simple 2-Layer Net)</h3>
+    <div class="graph-canvas">
+      <div class="g-node input">x : [32, 512]<br/><small style="color:var(--muted);font-size:0.7rem">Input tensor</small></div>
+      <div class="g-connector"><span>&#8595;</span><small>input</small></div>
+      <div class="g-row">
+        <div class="g-node op-node">weight&#8321; : [512,256]<br/><small style="color:var(--muted);font-size:0.7rem">Parameter</small></div>
+        <div style="color:var(--muted);font-size:0.9rem">&#8594;</div>
+        <div class="g-node op-node">MatMul<br/><small style="color:var(--muted);font-size:0.7rem">aten.mm</small></div>
+        <div style="color:var(--muted);font-size:0.9rem">&#8592;</div>
+        <div class="g-node op-node">bias&#8321; : [256]<br/><small style="color:var(--muted);font-size:0.7rem">Parameter</small></div>
+      </div>
+      <div class="g-connector"><span>&#8595;</span><small>+ bias</small></div>
+      <div class="g-node op-node">Add (x @ W&#8321; + b&#8321;)<br/><small style="color:var(--muted);font-size:0.7rem">aten.add &mdash; [32, 256]</small></div>
+      <div class="g-connector"><span>&#8595;</span></div>
+      <div class="g-node op-node">ReLU<br/><small style="color:var(--muted);font-size:0.7rem">aten.relu &mdash; [32, 256]</small></div>
+      <div class="g-connector"><span>&#8595;</span></div>
+      <div class="g-row">
+        <div class="g-node op-node">weight&#8322; : [256,10]<br/><small style="color:var(--muted);font-size:0.7rem">Parameter</small></div>
+        <div style="color:var(--muted);font-size:0.9rem">&#8594;</div>
+        <div class="g-node op-node">MatMul<br/><small style="color:var(--muted);font-size:0.7rem">aten.mm</small></div>
+        <div style="color:var(--muted);font-size:0.9rem">&#8592;</div>
+        <div class="g-node op-node">bias&#8322; : [10]<br/><small style="color:var(--muted);font-size:0.7rem">Parameter</small></div>
+      </div>
+      <div class="g-connector"><span>&#8595;</span></div>
+      <div class="g-node op-node">Add (x @ W&#8322; + b&#8322;)<br/><small style="color:var(--muted);font-size:0.7rem">aten.add &mdash; [32, 10]</small></div>
+      <div class="g-connector"><span>&#8595;</span><small>logits</small></div>
+      <div class="g-node output">&#375;&#770; : Predictions [32, 10]<br/><small style="color:var(--muted);font-size:0.7rem">Forward output</small></div>
+    </div>
+    <div class="callout callout-key"><strong>&#128273; Key Property of the Forward Graph</strong>The forward graph is a <strong>DAG &mdash; Directed Acyclic Graph</strong>. Data flows in one direction only (no cycles). This structure is what enables compilers to reason about dependencies, reorder operations safely, and fuse adjacent ops.</div>
+  </section>
+
+  <div class="glow-line"></div>
+
+  <!-- SECTION 6: BACKWARD GRAPH -->
+  <section id="backward">
+    <div class="section-label"><div class="dot"></div> Section 06</div>
+    <h2>&#128260; Backward Graph &mdash; Model Correction</h2>
+    <p class="section-intro">The backward graph is how the model <em>learns</em>. It flows gradients backwards through the same operations &mdash; computing how much each weight contributed to the error, so we can nudge weights in the right direction.</p>
+    <div class="callout callout-info"><strong>&#128161; Intuition First</strong>Think of training as:<br/><br/>1. <strong>Forward pass</strong> &mdash; "Here's my prediction."<br/>2. <strong>Loss</strong> &mdash; "Here's how wrong you were."<br/>3. <strong>Backward pass</strong> &mdash; "Here's how much each weight caused the wrongness."<br/>4. <strong>Optimizer step</strong> &mdash; "Now let's fix the weights."</div>
+    <div class="flow" style="margin:2rem 0;">
+      <div class="flow-node blue-hl">Input x<div class="sub">data</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node highlight">Forward Pass<div class="sub">compute &#375;&#770;</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node" style="background:rgba(255,109,0,0.1);border-color:rgba(255,109,0,0.5);color:var(--orange)">Loss<div class="sub">&#375;&#770; vs y</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node" style="background:rgba(41,121,255,0.08);border-color:rgba(41,121,255,0.5);color:#64b5f6">Backward Pass<div class="sub">&#8706;L/&#8706;w for all w</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node green-hl">Optimizer<div class="sub">w -= lr&middot;&#8706;L/&#8706;w</div></div>
+    </div>
+    <h3 style="font-size:1rem;font-weight:700;margin:2rem 0 0.5rem;color:#64b5f6">Backward Graph &mdash; Gradients Flow Upstream</h3>
+    <div class="graph-canvas">
+      <div class="g-node loss-node">Loss : scalar<br/><small style="color:var(--muted);font-size:0.7rem">CrossEntropyLoss</small></div>
+      <div class="g-connector"><span>&#8595;</span><small>&#8706;L/&#8706;logits</small></div>
+      <div class="g-node grad-node">Grad: Add backward<br/><small style="color:var(--muted);font-size:0.7rem">passes gradient through</small></div>
+      <div class="g-connector"><span>&#8595;</span><small>&#8706;L/&#8706;(xW&#8322;)</small></div>
+      <div class="g-row">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+          <div class="g-node grad-node">Grad: MatMul backward<br/><small style="color:var(--muted);font-size:0.7rem">&#8706;L/&#8706;x = grad @ W&#8322;&#7488;</small></div>
+          <div class="g-connector"><span>&#8595;</span><small>&#8706;L/&#8706;x (mid)</small></div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+          <div class="g-node" style="border-color:rgba(255,214,0,0.4);color:var(--yellow);background:rgba(255,214,0,0.07)">&#8706;L/&#8706;W&#8322; = x&#7488; @ grad<br/><small style="color:var(--muted);font-size:0.7rem">weight gradient &#10003;</small></div>
+          <div class="g-connector"><span>&#8595;</span><small>update W&#8322;</small></div>
+        </div>
+      </div>
+      <div class="g-node grad-node">Grad: ReLU backward<br/><small style="color:var(--muted);font-size:0.7rem">grad * (x &gt; 0) &mdash; zero out negatives</small></div>
+      <div class="g-connector"><span>&#8595;</span><small>&#8706;L/&#8706;(x before relu)</small></div>
+      <div class="g-row">
+        <div class="g-node grad-node">Grad: MatMul backward<br/><small style="color:var(--muted);font-size:0.7rem">&#8706;L/&#8706;x = grad @ W&#8321;&#7488;</small></div>
+        <div class="g-node" style="border-color:rgba(255,214,0,0.4);color:var(--yellow);background:rgba(255,214,0,0.07)">&#8706;L/&#8706;W&#8321; = x&#7488; @ grad<br/><small style="color:var(--muted);font-size:0.7rem">weight gradient &#10003;</small></div>
+      </div>
+      <div class="g-connector"><span>&#8595;</span></div>
+      <div class="g-node" style="border-color:rgba(255,214,0,0.5);color:var(--yellow);background:rgba(255,214,0,0.07)">All &#8706;L/&#8706;w computed &#10003;<br/><small style="color:var(--muted);font-size:0.7rem">Optimizer now updates all weights</small></div>
+    </div>
+    <div class="card-grid" style="margin-top:1.5rem">
+      <div class="icon-card">
+        <div class="icon-circle blue">&#128208;</div>
+        <div><h3>Chain Rule</h3><p>The backward pass is just the <strong>chain rule of calculus</strong> applied to a graph. Each node's backward function receives the upstream gradient and passes the right gradient downstream.</p></div>
+      </div>
+      <div class="icon-card">
+        <div class="icon-circle purple">&#128190;</div>
+        <div><h3>Saved Activations</h3><p>During the forward pass, PyTorch saves the <em>intermediate activations</em> needed to compute backward gradients. E.g., ReLU backward needs to know which inputs were positive.</p></div>
+      </div>
+      <div class="icon-card">
+        <div class="icon-circle green">&#128260;</div>
+        <div><h3>Autograd Engine</h3><p>In eager mode, PyTorch's dynamic autograd engine builds a virtual "tape" during the forward run, then replays it in reverse. With <code>torch.compile</code>, this becomes a static compiled graph.</p></div>
+      </div>
+    </div>
+    <div class="code-block">
+      <div class="code-header"><div class="code-dot r"></div><div class="code-dot y"></div><div class="code-dot g"></div>backward_pass.py &mdash; What happens under the hood</div>
+      <pre><span class="kw">import</span> torch, torch.nn <span class="kw">as</span> nn
+
+model     = <span class="fn">TinyNet</span>().<span class="fn">cuda</span>()
+optimizer = torch.optim.<span class="fn">Adam</span>(model.<span class="fn">parameters</span>(), lr=<span class="num">1e-3</span>)
+criterion = nn.<span class="fn">CrossEntropyLoss</span>()
+labels    = torch.<span class="fn">randint</span>(<span class="num">0</span>, <span class="num">10</span>, (<span class="num">32</span>,)).<span class="fn">cuda</span>()
+
+<span class="cm"># 1. Zero out old gradients</span>
+optimizer.<span class="fn">zero_grad</span>()
+<span class="cm"># 2. FORWARD PASS</span>
+logits = <span class="fn">model</span>(x)
+<span class="cm"># 3. LOSS</span>
+loss   = <span class="fn">criterion</span>(logits, labels)
+<span class="cm"># 4. BACKWARD PASS - computes dL/dw for every parameter</span>
+loss.<span class="fn">backward</span>()
+<span class="cm"># 5. OPTIMIZER STEP - w = w - lr * dL/dw</span>
+optimizer.<span class="fn">step</span>()
+
+<span class="cm"># With torch.compile, steps 2-4 become one compiled unit!</span>
+compiled_model = torch.<span class="fn">compile</span>(model)  <span class="cm"># fwd + bwd both compiled</span></pre>
+    </div>
+    <div class="callout callout-tip"><strong>&#9989; How Compilation Helps Backward</strong>In eager mode, the backward graph is rebuilt every training iteration. With <code>torch.compile</code> + AOT Autograd, the backward graph is compiled <em>once</em> and reused. This can deliver <strong>2-4&times; speedup</strong> on the backward pass alone.</div>
+  </section>
+
+  <div class="glow-line"></div>
+
+  <!-- SECTION 7: KERNEL FUSION -->
+  <section id="fusion">
+    <div class="section-label"><div class="dot"></div> Section 07</div>
+    <h2>&#128256; Kernel Fusion &mdash; The Secret Weapon</h2>
+    <p class="section-intro">Kernel fusion is the most impactful optimization that <code>torch.compile</code> performs. Instead of launching separate GPU kernels for each operation, it <em>combines multiple ops into a single kernel</em> &mdash; dramatically reducing memory bandwidth usage and launch overhead.</p>
+    <div class="callout callout-key"><strong>&#128273; The Memory Bandwidth Problem</strong>GPUs are incredibly fast at computation (FLOPS). But they're often <em>memory bandwidth limited</em> &mdash; meaning the bottleneck is how fast data can be moved between GPU memory (HBM) and compute cores (registers/SRAM). Every kernel launch reads from memory and writes back. Fusing kernels keeps data in fast registers, avoiding expensive memory round-trips.</div>
+    <div class="fusion-demo">
+      <h3>// EAGER MODE &mdash; Each op = its own kernel + memory round-trip</h3>
+      <div class="kernel-row">
+        <div class="k-label">Step 1</div>
+        <div class="k-op">Read x from HBM</div><div class="k-arrow">&#8594;</div>
+        <div class="k-op">x = x * 2</div><div class="k-arrow">&#8594;</div>
+        <div class="k-mem">Write x to HBM &#128190;</div>
+      </div>
+      <div class="kernel-row">
+        <div class="k-label">Step 2</div>
+        <div class="k-mem">Read x from HBM &#128190;</div><div class="k-arrow">&#8594;</div>
+        <div class="k-op">x = relu(x)</div><div class="k-arrow">&#8594;</div>
+        <div class="k-mem">Write x to HBM &#128190;</div>
+      </div>
+      <div class="kernel-row">
+        <div class="k-label">Step 3</div>
+        <div class="k-mem">Read x from HBM &#128190;</div><div class="k-arrow">&#8594;</div>
+        <div class="k-op">x = x + bias</div><div class="k-arrow">&#8594;</div>
+        <div class="k-mem">Write x to HBM &#128190;</div>
+      </div>
+      <div class="kernel-row" style="margin-top:1rem">
+        <div class="k-label" style="color:var(--red)">Mem BW</div>
+        <div class="mem-bar"><div class="mem-fill eager"></div></div>
+        <span class="label-small" style="color:var(--red)">6&times; memory round-trips</span>
+      </div>
+      <div style="height:1px;background:rgba(124,77,255,0.15);margin:1.5rem 0"></div>
+      <h3>// COMPILED + FUSED &mdash; All ops in ONE kernel, data stays in registers</h3>
+      <div class="kernel-row">
+        <div class="k-label">Step 1</div>
+        <div class="k-fused">Read x from HBM</div><div class="k-arrow">&#8594;</div>
+        <div class="k-fused">x*2 &#8594; relu &#8594; +bias (ALL IN REGISTERS)</div><div class="k-arrow">&#8594;</div>
+        <div class="k-fused">Write x to HBM &#10003;</div>
+      </div>
+      <div class="kernel-row" style="margin-top:1rem">
+        <div class="k-label" style="color:var(--green)">Mem BW</div>
+        <div class="mem-bar"><div class="mem-fill fused"></div></div>
+        <span class="label-small" style="color:var(--green)">2&times; memory round-trips &#128640;</span>
+      </div>
+    </div>
+    <h3 style="font-size:1.05rem;font-weight:700;margin:2rem 0 1rem;color:var(--purple2)">What TorchInductor Fuses</h3>
+    <div class="card-grid">
+      <div class="icon-card">
+        <div class="icon-circle green">&#128279;</div>
+        <div><h3>Pointwise Fusion</h3><p>Element-wise ops like <code>relu</code>, <code>gelu</code>, <code>add bias</code>, <code>multiply scalar</code> are trivially fuseable. Multiple pointwise ops collapse into a single kernel.</p></div>
+      </div>
+      <div class="icon-card">
+        <div class="icon-circle orange">&#128202;</div>
+        <div><h3>Reduction Fusion</h3><p>Ops like <code>softmax</code>, <code>layer_norm</code>, <code>mean</code> combine a pointwise pass with a reduction. Fusing avoids writing intermediate results to slow HBM.</p></div>
+      </div>
+      <div class="icon-card">
+        <div class="icon-circle blue">&#9889;</div>
+        <div><h3>Fwd+Bwd Fusion</h3><p>AOT Autograd lets the compiler see both forward and backward together. It can fuse across the boundary &mdash; saving intermediates <em>only</em> when needed for backward.</p></div>
+      </div>
+      <div class="icon-card">
+        <div class="icon-circle cyan">&#129518;</div>
+        <div><h3>Flash Attention Style</h3><p><code>torch.compile</code> can generate Flash-Attention-like kernels for attention layers &mdash; fusing QKV matmul + softmax + value matmul + masking into one tiled kernel with 10&times; less memory.</p></div>
+      </div>
+    </div>
+    <div class="code-block">
+      <div class="code-header"><div class="code-dot r"></div><div class="code-dot y"></div><div class="code-dot g"></div>kernel_fusion_example.py &mdash; What Triton code gets generated</div>
+      <pre><span class="cm"># What YOU write:</span>
+<span class="kw">def</span> <span class="fn">fused_op</span>(x, bias):
+    <span class="kw">return</span> torch.<span class="fn">relu</span>(x * <span class="num">2.0</span> + bias)
+
+<span class="cm"># What TorchInductor GENERATES (Triton pseudocode):</span>
+<span class="cm">#</span>
+<span class="cm"># @triton.jit</span>
+<span class="cm"># def fused_kernel(x_ptr, bias_ptr, out_ptr, n_elements):</span>
+<span class="cm">#     pid     = tl.program_id(0)</span>
+<span class="cm">#     offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)</span>
+<span class="cm">#     mask    = offsets &lt; n_elements</span>
+<span class="cm">#</span>
+<span class="cm">#     x    = tl.load(x_ptr + offsets, mask=mask)      # one load</span>
+<span class="cm">#     bias = tl.load(bias_ptr + offsets, mask=mask)    # one load</span>
+<span class="cm">#</span>
+<span class="cm">#     # ALL OPS RUN IN REGISTERS - no memory writes between!</span>
+<span class="cm">#     result = tl.maximum(x * 2.0 + bias, 0.0)        # fused!</span>
+<span class="cm">#</span>
+<span class="cm">#     tl.store(out_ptr + offsets, result, mask=mask)   # one write</span>
+<span class="cm">#</span>
+<span class="cm"># 3 ops -> 1 kernel, 2 memory accesses instead of 6!</span>
+
+<span class="cm"># See Inductor output yourself:</span>
+<span class="kw">import</span> torch._inductor.config <span class="kw">as</span> cfg
+cfg.trace.enabled = <span class="kw">True</span>  <span class="cm"># dump Triton code to /tmp/torchinductor_*</span>
+compiled = torch.<span class="fn">compile</span>(fused_op)
+<span class="fn">compiled</span>(x, bias)</pre>
+    </div>
+    <div class="stat-grid" style="margin-top:1.5rem">
+      <div class="stat-card"><div class="stat-val" style="color:var(--green)">2-4&times;</div><div class="stat-lbl">Typical inference speedup</div></div>
+      <div class="stat-card"><div class="stat-val" style="color:var(--cyan)">10&times;</div><div class="stat-lbl">Memory savings (Flash Attention)</div></div>
+      <div class="stat-card"><div class="stat-val" style="color:var(--purple2)">~0</div><div class="stat-lbl">Extra memory for intermediates</div></div>
+      <div class="stat-card"><div class="stat-val" style="color:var(--yellow)">1</div><div class="stat-lbl">Kernel launch (was N launches)</div></div>
+    </div>
+  </section>
+
+  <div class="glow-line"></div>
+
+  <!-- SECTION 8: SUMMARY -->
+  <section id="summary">
+    <div class="section-label"><div class="dot"></div> Section 08</div>
+    <h2>&#9989; Cheat Sheet &mdash; The Full Picture</h2>
+    <p class="section-intro">Everything at a glance. Use this as your quick reference.</p>
+    <div style="overflow-x:auto;border-radius:12px;border:1px solid var(--border)">
+      <table class="compare-table">
+        <thead>
+          <tr><th>Concept</th><th>What it is</th><th>Analogy</th><th>Speed Impact</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Eager Mode</strong></td><td>Python runs each op immediately, one at a time. No compilation.</td><td>Cooking by reading recipe one sentence at a time</td><td><span class="badge badge-yellow">Baseline</span></td></tr>
+          <tr><td><strong>torch.compile</strong></td><td>Traces your model into a graph, then compiles it with Inductor.</td><td>Reading the whole recipe first, then cooking optimally</td><td><span class="badge badge-green">2-4&times; faster</span></td></tr>
+          <tr><td><strong>TorchDynamo</strong></td><td>Intercepts Python bytecode, traces tensor ops into an FX graph.</td><td>A stenographer recording what you cook, not how you think</td><td><span class="badge badge-blue">Enables compilation</span></td></tr>
+          <tr><td><strong>AOT Autograd</strong></td><td>Pre-computes forward and backward graphs before training begins.</td><td>Planning the recipe AND cleanup before starting to cook</td><td><span class="badge badge-green">Bwd 2-3&times; faster</span></td></tr>
+          <tr><td><strong>Forward Graph</strong></td><td>DAG of ops from input to output. Shows how data flows forward.</td><td>Flowchart from raw ingredients to finished dish</td><td><span class="badge badge-blue">Compiled once</span></td></tr>
+          <tr><td><strong>Backward Graph</strong></td><td>Reverse graph computing &#8706;loss/&#8706;weight for every parameter.</td><td>Figuring out which ingredient made the dish too salty</td><td><span class="badge badge-blue">Compiled once</span></td></tr>
+          <tr><td><strong>Kernel Fusion</strong></td><td>Merges multiple GPU ops into one kernel; data stays in registers.</td><td>Chopping + saut&eacute;ing in one pan vs. switching pans each step</td><td><span class="badge badge-green">Massive BW saving</span></td></tr>
+          <tr><td><strong>TorchInductor</strong></td><td>Backend compiler generating fused Triton/CUDA code.</td><td>A master chef writing the most efficient cooking instructions</td><td><span class="badge badge-green">Enables fusion</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="highlight-box" style="margin-top:2.5rem">
+      <h3>&#129504; The One Mental Model to Remember</h3>
+      <ul class="custom">
+        <li><strong>Eager mode</strong> = Python is the boss. It calls CUDA one op at a time. Easy to debug, harder to optimize at scale.</li>
+        <li><strong>torch.compile</strong> = Python steps aside. The compiler sees the whole forward+backward graph and optimizes it holistically.</li>
+        <li><strong>Forward graph</strong> = the "recipe" for computing predictions from inputs (data flows forward).</li>
+        <li><strong>Backward graph</strong> = the "recipe" for figuring out how wrong each weight was, using the chain rule (gradients flow backward).</li>
+        <li><strong>Kernel fusion</strong> = keep data in super-fast GPU registers across multiple ops, instead of bouncing to slow global memory between each op.</li>
+        <li>The pipeline: <strong>Dynamo</strong> (captures graph) &#8594; <strong>AOT Autograd</strong> (derives backward) &#8594; <strong>Inductor</strong> (fuses &amp; generates kernels).</li>
+      </ul>
+    </div>
+    <h3 style="font-size:1rem;font-weight:700;margin:2.5rem 0 1rem;color:var(--purple2)">The Complete torch.compile Journey</h3>
+    <div class="flow" style="flex-wrap:wrap;gap:4px">
+      <div class="flow-node blue-hl" style="min-width:100px">Your Code<div class="sub">model.py</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node highlight" style="min-width:110px">Dynamo<div class="sub">trace bytecode</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node highlight" style="min-width:110px">FX Graph<div class="sub">forward ops</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node highlight" style="min-width:110px">AOT Autograd<div class="sub">+ backward</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node highlight" style="min-width:110px">Inductor<div class="sub">optimize</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node green-hl" style="min-width:110px">Fused Kernels<div class="sub">Triton/CUDA</div></div>
+      <div class="flow-arrow">&#8594;</div>
+      <div class="flow-node orange-hl" style="min-width:100px">GPU &#128640;<div class="sub">fast!</div></div>
+    </div>
+    <div class="card" style="margin-top:3rem">
+      <h3 style="font-size:1.1rem;font-weight:700;margin-bottom:1.2rem;color:var(--purple2)">&#128218; Go Deeper &mdash; Official Resources</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:0.8rem">
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:1rem">
+          <div style="font-size:0.78rem;font-weight:700;color:var(--muted);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:6px">PyTorch Docs</div>
+          <div style="font-size:0.9rem;font-weight:600;margin-bottom:4px">torch.compile Tutorial</div>
+          <div style="font-size:0.8rem;color:var(--muted)">pytorch.org/tutorials/intermediate/torch_compile_tutorial.html</div>
+        </div>
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:1rem">
+          <div style="font-size:0.78rem;font-weight:700;color:var(--muted);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:6px">Research Paper</div>
+          <div style="font-size:0.9rem;font-weight:600;margin-bottom:4px">TorchDynamo Paper (2022)</div>
+          <div style="font-size:0.8rem;color:var(--muted)">arxiv.org/abs/2206.01978 &mdash; Bytecode tracing approach</div>
+        </div>
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:1rem">
+          <div style="font-size:0.78rem;font-weight:700;color:var(--muted);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:6px">PyTorch Blog</div>
+          <div style="font-size:0.9rem;font-weight:600;margin-bottom:4px">AOT Autograd Deep Dive</div>
+          <div style="font-size:0.8rem;color:var(--muted)">pytorch.org/blog &mdash; "AOT Autograd: Tracing the Backward"</div>
+        </div>
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:1rem">
+          <div style="font-size:0.78rem;font-weight:700;color:var(--muted);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:6px">Flash Attention</div>
+          <div style="font-size:0.9rem;font-weight:600;margin-bottom:4px">Kernel Fusion in Practice</div>
+          <div style="font-size:0.8rem;color:var(--muted)">arxiv.org/abs/2205.14135 &mdash; FlashAttention paper</div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="logo">PyTorch Compilation Deep Dive</div>
+  <p>Eager Mode &middot; Forward/Backward Graphs &middot; Kernel Fusion</p>
+  <p style="margin-top:0.5rem;font-size:0.78rem">Built for learning &mdash; keep building, keep shipping &#128640;</p>
+</footer>
+
+<script>
+  const bar = document.getElementById('readProgress');
+  window.addEventListener('scroll', () => {
+    const doc = document.documentElement;
+    const pct = (window.scrollY / (doc.scrollHeight - doc.clientHeight)) * 100;
+    bar.style.width = pct + '%';
+  });
+  const sections = document.querySelectorAll('section[id]');
+  const navLinks = document.querySelectorAll('.nav-link[href^="#"]');
+  new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        navLinks.forEach(l => l.classList.remove('active'));
+        const a = document.querySelector('.nav-link[href="#' + e.target.id + '"]');
+        if (a) a.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-30% 0px -60% 0px' }).observe(...sections);
+  document.querySelectorAll('.card, .icon-card, .step, .stat-card').forEach(c => {
+    c.style.opacity = '0';
+    c.style.transform = 'translateY(20px)';
+    new IntersectionObserver(([e]) => {
+      if (e.isIntersecting) {
+        e.target.style.transition = 'opacity 0.5s ease, transform 0.5s ease';
+        e.target.style.opacity = '1';
+        e.target.style.transform = 'translateY(0)';
+      }
+    }, { threshold: 0.1 }).observe(c);
+  });
+</script>
+</body>
+</html>
