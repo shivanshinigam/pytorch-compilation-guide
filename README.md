@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🔥 PyTorch Compilation Deep Dive
+# PyTorch Compilation Deep Dive
 
 ### How PyTorch *Actually* Compiles Your Code
 
@@ -9,30 +9,30 @@
 [![License](https://img.shields.io/badge/License-MIT-7c4dff?style=for-the-badge)](LICENSE)
 
 > **Eager Mode → Compiled Graphs → Kernel Fusion**  
-> Understand the full journey from `model.forward(x)` to blazing-fast GPU kernels — explained simply.
+> Understand the full journey from `model.forward(x)` to optimized GPU kernels — explained simply.
 
-🌐 **[View Interactive Version (Animated)](https://shivanshinigam.github.io/pytorch-compilation-guide/README.html)**
+**[View Interactive Version (Animated)](https://shivanshinigam.github.io/pytorch-compilation-guide/README.html)**
 
 </div>
 
 ---
 
-## 📚 Table of Contents
+## Table of Contents
 
 | # | Topic | TL;DR |
 |---|-------|-------|
-| [01](#-section-01--eager-mode) | 🐢 Eager Mode | Python calls CUDA one op at a time |
-| [02](#-section-02--torchcompile) | ⚡ `torch.compile` | One line → 2-4× speedup |
-| [03](#-section-03--torchdynamo) | 🦆 TorchDynamo | Traces Python bytecode into an FX Graph |
-| [04](#-section-04--aot-autograd) | 🔬 AOT Autograd | Compiles forward + backward before training |
-| [05](#-section-05--forward-computation-graph) | 📊 Forward Graph | DAG of ops from input → logits |
-| [06](#-section-06--backward-graph--model-correction) | 🔄 Backward Graph | Gradients flow in reverse for learning |
-| [07](#-section-07--kernel-fusion) | 🔀 Kernel Fusion | Multiple GPU ops → one kernel, zero intermediate memory |
-| [08](#-section-08--cheat-sheet) | ✅ Cheat Sheet | Full comparison table |
+| [01](#section-01--eager-mode) | Eager Mode | Python calls CUDA one op at a time |
+| [02](#section-02--torchcompile) | `torch.compile` | One line → 2-4× speedup |
+| [03](#section-03--torchdynamo) | TorchDynamo | Traces Python bytecode into an FX Graph |
+| [04](#section-04--aot-autograd) | AOT Autograd | Compiles forward + backward before training |
+| [05](#section-05--forward-computation-graph) | Forward Graph | DAG of ops from input → logits |
+| [06](#section-06--backward-graph--model-correction) | Backward Graph | Gradients flow in reverse for learning |
+| [07](#section-07--kernel-fusion) | Kernel Fusion | Multiple GPU ops → one kernel, zero intermediate memory |
+| [08](#section-08--cheat-sheet) | Cheat Sheet | Full comparison table |
 
 ---
 
-## 🐢 Section 01 — Eager Mode
+## Section 01 — Eager Mode
 
 > **The Default PyTorch — "Run it now, no planning"**
 
@@ -50,11 +50,11 @@ class TinyNet(nn.Module):
         self.linear2 = nn.Linear(256, 10)
 
     def forward(self, x):
-        # ① Python → CUDA matmul fires RIGHT NOW
+        # (1) Python → CUDA matmul fires RIGHT NOW
         x = self.linear1(x)
-        # ② Python → CUDA relu fires RIGHT NOW
+        # (2) Python → CUDA relu fires RIGHT NOW
         x = self.relu(x)
-        # ③ Python → CUDA matmul fires RIGHT NOW
+        # (3) Python → CUDA matmul fires RIGHT NOW
         x = self.linear2(x)
         return x
 
@@ -86,14 +86,14 @@ Python Interpreter
 |---|---|
 | Python calls per GPU op | **1:1 — every single op** |
 | Python overhead per op | **~microseconds (adds up fast)** |
-| Cross-op optimization | **❌ Zero — GPU cannot see ahead** |
-| Debuggability | **✅ Easy — print/inspect anything** |
+| Cross-op optimization | **None — GPU cannot see ahead** |
+| Debuggability | **Easy — print/inspect anything** |
 
-> ⚠️ **The bottleneck:** For every operation, Python wakes up, schedules the CUDA call, and waits. In a 100-layer model that's 100+ round-trips. The GPU sits idle between calls.
+> **The bottleneck:** For every operation, Python wakes up, schedules the CUDA call, and waits. In a 100-layer model that's 100+ round-trips. The GPU sits idle between calls.
 
 ---
 
-## ⚡ Section 02 — `torch.compile`
+## Section 02 — `torch.compile`
 
 > **One line of code. Massive speedup.**
 
@@ -113,8 +113,8 @@ compiled_model = torch.compile(model)
 # First call: PyTorch TRACES & COMPILES (one-time warm-up cost)
 output = compiled_model(x)
 
-# All subsequent calls: runs the OPTIMIZED compiled graph ⚡
-output = compiled_model(x)   # blazing fast!
+# All subsequent calls: runs the OPTIMIZED compiled graph
+output = compiled_model(x)   # much faster
 
 # Choose your backend / optimization level:
 compiled_model = torch.compile(model, backend="inductor")       # default
@@ -143,12 +143,12 @@ Your Python Code
 └────────┬─────────────┘
          │
          ▼
-     GPU 🚀  (Optimized execution)
+     GPU  (Optimized execution)
 ```
 
 ---
 
-## 🦆 Section 03 — TorchDynamo
+## Section 03 — TorchDynamo
 
 > **Tracing Python Safely — The Hardest Part**
 
@@ -161,14 +161,14 @@ The hardest problem in compiling PyTorch wasn't making fast kernels — it was *
 - Records **guards** (assumptions about shapes/dtypes) for smart recompilation
 
 ```python
-# ── Your original Python forward ──────────────────────────────
+# -- Your original Python forward --
 def forward(x, weight1, bias1, weight2, bias2):
     x = x @ weight1 + bias1     # linear
     x = torch.relu(x)           # activation
     x = x @ weight2 + bias2     # linear
     return x
 
-# ── What TorchDynamo captures (FX Graph) ─────────────────────
+# -- What TorchDynamo captures (FX Graph) --
 #
 #   graph(x, weight1, bias1, weight2, bias2):
 #     mm_0   = aten.mm(x, weight1)       # matmul node
@@ -178,14 +178,14 @@ def forward(x, weight1, bias1, weight2, bias2):
 #     add_1  = aten.add(mm_1, bias2)     # add node
 #     return add_1
 #
-# This FX Graph is a clean, compilable Python object ✓
+# This FX Graph is a clean, compilable Python object
 ```
 
-> 💡 **Graph Breaks:** If Dynamo hits something untraceable, it *breaks the graph* at that point, runs that part eagerly, then starts a new graph. Your code **always works** — just might not be fully optimized at break points.
+> **Graph Breaks:** If Dynamo hits something untraceable, it *breaks the graph* at that point, runs that part eagerly, then starts a new graph. Your code **always works** — just might not be fully optimized at break points.
 
 ---
 
-## 🔬 Section 04 — AOT Autograd
+## Section 04 — AOT Autograd
 
 > **Ahead-of-Time: The Joint Forward + Backward Graph**
 
@@ -195,7 +195,7 @@ After Dynamo captures the forward graph, **AOT Autograd** expands it to include 
 |---|---|---|
 | When backward is built | At runtime during `loss.backward()` | **At compile time, before training** |
 | Recomputed every step? | **Yes, every step** | **No, compiled once** |
-| Can be fused with forward? | ❌ No | ✅ Yes |
+| Can be fused with forward? | No | **Yes** |
 | Speedup | Baseline | **2-3× faster backward** |
 
 ```python
@@ -216,12 +216,12 @@ x = torch.randn(4, 4, requires_grad=True)
 w = torch.randn(4, 4, requires_grad=True)
 
 loss = compiled_fn(x, w).sum()
-loss.backward()   # ← uses the COMPILED backward graph!
+loss.backward()   # uses the COMPILED backward graph
 ```
 
 ---
 
-## 📊 Section 05 — Forward Computation Graph
+## Section 05 — Forward Computation Graph
 
 > **The "Recipe" for Computing Predictions**
 
@@ -232,23 +232,23 @@ INPUT
   x : [32, 512]
       │
       ▼
-  weight₁:[512,256] ──► MatMul ◄── bias₁:[256]
+  weight1:[512,256] ──► MatMul ◄── bias1:[256]
                             │
                             ▼
-                    Add  →  x @ W₁ + b₁  →  [32, 256]
+                    Add  →  x @ W1 + b1  →  [32, 256]
                             │
                             ▼
                     ReLU  →  max(0, x)   →  [32, 256]
                             │
                             ▼
-  weight₂:[256,10] ──► MatMul ◄── bias₂:[10]
+  weight2:[256,10] ──► MatMul ◄── bias2:[10]
                             │
                             ▼
-                    Add  →  x @ W₂ + b₂  →  [32, 10]
+                    Add  →  x @ W2 + b2  →  [32, 10]
                             │
                             ▼
 OUTPUT
-  ŷ : Predictions [32, 10]
+  y_hat : Predictions [32, 10]
 ```
 
 ```python
@@ -261,11 +261,11 @@ explanation = torch._dynamo.explain(model)(x)
 print(explanation.graph_count)   # 1 = ideal, >1 = graph breaks exist
 ```
 
-> 🔑 Because it's a DAG (no cycles), the compiler can reason about dependencies, safely reorder operations, and fuse adjacent ops.
+> Because it's a DAG (no cycles), the compiler can reason about dependencies, safely reorder operations, and fuse adjacent ops.
 
 ---
 
-## 🔄 Section 06 — Backward Graph & Model Correction
+## Section 06 — Backward Graph & Model Correction
 
 > **How the Model Actually Learns**
 
@@ -274,35 +274,35 @@ The backward graph flows gradients *backwards* through the same operations — c
 ### The Learning Loop
 
 ```
-Input x  ──►  Forward Pass  ──►  Loss (ŷ vs y)
-                                       │
-                                       ▼
-              Optimizer Step  ◄──  Backward Pass
-              (w -= lr · ∂L/∂w)    (∂L/∂w for all w)
+Input x  ──►  Forward Pass  ──►  Loss (y_hat vs y)
+                                        │
+                                        ▼
+               Optimizer Step  ◄──  Backward Pass
+               (w -= lr * dL/dw)    (dL/dw for all w)
 ```
 
 ### Backward Graph — Gradients Flow Upstream
 
 ```
 Loss (scalar)
-      │  ∂L/∂logits
+      │  dL/d_logits
       ▼
   Add backward  →  passes gradient through
-      │  ∂L/∂(xW₂)
+      │  dL/d(xW2)
       ├──────────────────────────────┐
       ▼                              ▼
-  MatMul bwd                  ∂L/∂W₂ = xᵀ @ grad  ✓
-  ∂L/∂x = grad @ W₂ᵀ
+  MatMul bwd                  dL/dW2 = xT @ grad  [weight gradient]
+  dL/dx = grad @ W2T
       │
       ▼
   ReLU backward  →  grad * (x > 0)  [zero out negatives]
       │
       ├──────────────────────────────┐
       ▼                              ▼
-  MatMul bwd                  ∂L/∂W₁ = xᵀ @ grad  ✓
-  ∂L/∂x = grad @ W₁ᵀ
+  MatMul bwd                  dL/dW1 = xT @ grad  [weight gradient]
+  dL/dx = grad @ W1T
 
-All ∂L/∂w computed ✅  →  Optimizer updates all weights
+All dL/dw computed  →  Optimizer updates all weights
 ```
 
 ```python
@@ -318,18 +318,18 @@ labels = torch.randint(0, 10, (32,)).cuda()
 optimizer.zero_grad()                    # 1. Clear old gradients
 logits = model(x)                        # 2. FORWARD  — compute predictions
 loss   = criterion(logits, labels)       # 3. LOSS     — how wrong?
-loss.backward()                          # 4. BACKWARD — compute ∂L/∂w
-optimizer.step()                         # 5. UPDATE   — w -= lr · ∂L/∂w
+loss.backward()                          # 4. BACKWARD — compute dL/dw
+optimizer.step()                         # 5. UPDATE   — w -= lr * dL/dw
 
 # With torch.compile, steps 2-4 become ONE compiled unit:
-compiled_model = torch.compile(model)    # fwd + bwd both compiled ⚡
+compiled_model = torch.compile(model)    # fwd + bwd both compiled
 ```
 
-> ✅ In eager mode, the backward graph is **rebuilt every training step**. With `torch.compile`, it's compiled **once** and reused — delivering **2-4× speedup** on the backward pass alone.
+> In eager mode, the backward graph is **rebuilt every training step**. With `torch.compile`, it's compiled **once** and reused — delivering **2-4× speedup** on the backward pass alone.
 
 ---
 
-## 🔀 Section 07 — Kernel Fusion
+## Section 07 — Kernel Fusion
 
 > **The Secret Weapon — Keeping Data in Registers**
 
@@ -343,26 +343,26 @@ But they're often memory-bandwidth limited.
 
 Every kernel launch:
   READ from HBM (slow) → compute → WRITE back to HBM (slow)
-              ↑
-      This round-trip is the bottleneck!
+               ^
+       This round-trip is the bottleneck.
 ```
 
 ### Eager vs Fused — Side by Side
 
-**❌ Eager Mode — 3 kernels, 6 memory accesses:**
+**Eager Mode — 3 kernels, 6 memory accesses:**
 ```
-Step 1:  [Read x]  →  x = x * 2.0  →  [Write x] 💾
-Step 2:  [Read x]  →  x = relu(x)  →  [Write x] 💾
-Step 3:  [Read x]  →  x = x + bias →  [Write x] 💾
+Step 1:  [Read x]  →  x = x * 2.0  →  [Write x]
+Step 2:  [Read x]  →  x = relu(x)  →  [Write x]
+Step 3:  [Read x]  →  x = x + bias →  [Write x]
 
-Memory round-trips: ████████████████████████████████ 6 (slow 😓)
+Memory round-trips: ████████████████████████████████ 6  (slow)
 ```
 
-**✅ Fused — 1 kernel, 2 memory accesses:**
+**Fused — 1 kernel, 2 memory accesses:**
 ```
-Step 1:  [Read x]  →  x*2 → relu → +bias (ALL IN REGISTERS)  →  [Write x] ✅
+Step 1:  [Read x]  →  x*2 → relu → +bias (ALL IN REGISTERS)  →  [Write x]
 
-Memory round-trips: ████ 2 (fast 🚀)
+Memory round-trips: ████ 2  (fast)
 ```
 
 ### What TorchInductor Generates (Triton pseudocode)
@@ -384,11 +384,11 @@ def fused_op(x, bias):
 #     bias = tl.load(bias_ptr + offsets, mask=mask)    # ONE load
 #
 #     # ALL OPS IN REGISTERS — no memory writes between!
-#     result = tl.maximum(x * 2.0 + bias, 0.0)        # fused ✓
+#     result = tl.maximum(x * 2.0 + bias, 0.0)        # fused
 #
 #     tl.store(out_ptr + offsets, result, mask=mask)   # ONE write
 #
-# Result: 3 ops → 1 kernel  |  6 memory accesses → 2  ✓
+# Result: 3 ops → 1 kernel  |  6 memory accesses → 2
 
 # See what Inductor generates yourself:
 import torch._inductor.config as cfg
@@ -417,7 +417,7 @@ compiled(x, bias)
 
 ---
 
-## ✅ Section 08 — Cheat Sheet
+## Section 08 — Cheat Sheet
 
 ### Full Comparison Table
 
@@ -428,8 +428,8 @@ compiled(x, bias)
 | **TorchDynamo** | Intercepts Python bytecode → captures FX Graph | Stenographer recording what you cook, not how you think | Enables compilation |
 | **AOT Autograd** | Pre-computes fwd + bwd graphs before training | Planning recipe AND cleanup before starting | **Bwd 2–3× faster** |
 | **Forward Graph** | DAG of ops: input → output | Flowchart from raw ingredients to finished dish | Compiled once |
-| **Backward Graph** | Reverse graph: ∂loss/∂weight for every param | Finding which ingredient made the dish too salty | Compiled once |
-| **Kernel Fusion** | Merges GPU ops; data stays in registers | Chopping + sautéing in one pan, no pan-switching | **Massive BW saving** |
+| **Backward Graph** | Reverse graph: dL/dw for every param | Finding which ingredient made the dish too salty | Compiled once |
+| **Kernel Fusion** | Merges GPU ops; data stays in registers | Chopping + sauteing in one pan, no pan-switching | **Massive BW saving** |
 | **TorchInductor** | Backend compiler → generates Triton/CUDA code | Master chef writing most efficient instructions | Enables fusion |
 
 ### The One Mental Model
@@ -451,14 +451,14 @@ Kernel fusion  = Keep data in fast on-chip registers across multiple
 
 The pipeline:
   Dynamo (capture graph)
-    → AOT Autograd (derive backward)
-      → Inductor (fuse & generate kernels)
-        → GPU 🚀
+    -> AOT Autograd (derive backward)
+      -> Inductor (fuse & generate kernels)
+        -> GPU
 ```
 
 ---
 
-## 📖 Official Resources
+## Official Resources
 
 | Resource | Link |
 |---|---|
@@ -471,6 +471,6 @@ The pipeline:
 
 <div align="center">
 
-*Built for learning — keep building, keep shipping 🚀*
+*Built for learning — keep building, keep shipping.*
 
 </div>
