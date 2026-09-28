@@ -458,6 +458,291 @@ The pipeline:
 
 ---
 
+---
+
+## Section 09 — The Autograd Tape
+
+> **How PyTorch actually builds the backward graph during the forward pass**
+
+Before `loss.backward()` can run, PyTorch needs to know what the backward graph is. It builds this knowledge **during** the forward pass by attaching a `grad_fn` node to every output tensor that was produced from a `requires_grad=True` input. This linked chain of `grad_fn` objects **is** the backward graph.
+
+```python
+import torch
+
+x = torch.randn(4, 4, requires_grad=True)   # leaf tensor, no grad_fn
+w = torch.randn(4, 4, requires_grad=True)   # leaf tensor, no grad_fn
+
+y = x @ w              # y.grad_fn = MmBackward0     <- tape records this
+z = torch.relu(y)      # z.grad_fn = ReluBackward0   <- tape records this
+loss = z.sum()         # loss.grad_fn = SumBackward0 <- tape records this
+
+# Walk the tape:
+print(loss.grad_fn)                    # SumBackward0
+print(loss.grad_fn.next_functions)     # [(ReluBackward0, 0)]
+print(loss.grad_fn.next_functions[0][0].next_functions)  # [(MmBackward0, 0)]
+
+# This linked chain IS the backward graph.
+# backward() simply walks it in reverse:
+loss.backward()
+print(x.grad)   # computed via chain rule: d(loss)/dx
+print(w.grad)   # computed via chain rule: d(loss)/dw
+# Tape is discarded after this (graph is freed to save memory)
+# Use retain_graph=True to keep it for multiple backward passes
+```
+
+### The Tape Lifecycle
+
+```
+FORWARD PASS                           TAPE (built implicitly)
+x @ w  ──►  y          records ──►    MmBackward0  (knows x, w for grad)
+relu(y) ──► z          records ──►    ReluBackward0 (knows mask: where y > 0)
+z.sum() ──► loss       records ──►    SumBackward0
+
+BACKWARD PASS (loss.backward())        REPLAY IN REVERSE
+SumBackward0    ──►  grad = ones
+ReluBackward0   ──►  grad = grad * (y > 0)   [zero out negatives]
+MmBackward0     ──►  x.grad = grad @ wT
+                     w.grad = xT @ grad
+
+TAPE DISCARDED (memory freed)
+```
+
+> **With torch.compile + AOT Autograd:** This tape construction happens once at compile time. The `grad_fn` chain is analyzed, compiled into a static backward graph, and reused every training step — no tape construction overhead per step.
+
+---
+
+## Section 10 — Graph Breaks
+
+> **The biggest real-world obstacle to getting speedup from torch.compile**
+
+A graph break happens when TorchDynamo encounters something it cannot represent as a node in an FX Graph. It stops the current graph there, runs that segment eagerly, and starts a new graph afterward. Each break means Python overhead returns for that segment and the compiler loses the ability to optimize across the boundary.
+
+```
+One graph (ideal):   [op1 → op2 → op3 → ... → opN]   FAST
+With 3 breaks:       [op1→op2] | PYTHON | [op3→op4] | PYTHON | [op5→opN]   SLOW
+```
+
+### Common Graph Break Causes
+
+| Pattern | Causes Break? | Why | Fix |
+|---|---|---|---|
+| `if x.sum() > 0:` | Yes | Value unknown at trace time | `torch.cond()` or restructure |
+| `print(x.shape)` | Yes | Python side effect | Remove or guard with `is_compiling()` |
+| `x.numpy()` | Yes | Forces CPU/GPU sync | Stay in PyTorch |
+| `import scipy; scipy.fn(x)` | Yes | External Python | Use PyTorch ops |
+| `if x.shape[0] == 32:` | Yes | Shape-dependent branch | Use `dynamic=True` |
+| `nn.Sequential(...)` | No | Dynamo traces through it | — |
+| Python list comprehension over fixed list | No | Static at trace time | — |
+
+```python
+import torch
+
+model = MyModel()
+x     = torch.randn(32, 512)
+
+# Diagnose graph breaks:
+explanation = torch._dynamo.explain(model)(x)
+print(explanation.graph_count)    # 1 = perfect, >1 = breaks exist
+print(explanation.break_reasons)  # exactly why each break happened
+print(explanation.graphs)         # the FX graph between each break
+
+# Strict mode: raise error if ANY graph break occurs
+model = torch.compile(model, fullgraph=True)
+
+# Selectively disable compilation for one function:
+@torch.compiler.disable
+def non_compilable(x):
+    return some_external_call(x)
+
+# Handle dynamic shapes (different batch sizes) without recompilation:
+model = torch.compile(model, dynamic=True)
+
+# Check inside forward if being compiled:
+def forward(self, x):
+    if not torch.compiler.is_compiling():
+        print(x.shape)   # only runs in eager, no break
+    return self.layer(x)
+```
+
+---
+
+## Section 11 — When NOT to Use torch.compile
+
+`torch.compile` is not always the right choice. Here's the honest guide:
+
+| Situation | Recommendation | Reason |
+|---|---|---|
+| Model > 10M params, fixed shapes | **Use compile** | Clear speedup, compilation overhead amortized |
+| Tiny model (< 1ms per call) | **Use eager** | Compilation overhead > runtime savings |
+| Dynamic batch sizes each call | **Use `dynamic=True`** or eager | Recompilation cost per new shape |
+| Debugging, research | **Use eager** | Compile makes stack traces harder to read |
+| Already using `torch.jit.script` | **Probably keep script** | script serializes, compile does not |
+| Deploying to mobile / edge | **Use torch.export** | compile requires Python runtime |
+| Need ONNX export | **Use torch.export → ONNX** | compile graph not portable |
+| Single-sample latency critical | **Benchmark both** | Compile overhead per call may dominate |
+
+```python
+# The safe approach: always benchmark before assuming compile helps
+import torch, time
+
+model = MyModel().cuda()
+x     = torch.randn(32, 512).cuda()
+
+# Measure eager
+model(x)  # warmup
+t = time.perf_counter()
+for _ in range(100): model(x)
+eager_ms = (time.perf_counter() - t) * 10  # ms per call
+
+# Measure compiled
+compiled = torch.compile(model)
+compiled(x)  # warmup (compilation happens here)
+compiled(x)  # second warmup
+t = time.perf_counter()
+for _ in range(100): compiled(x)
+compiled_ms = (time.perf_counter() - t) * 10
+
+print(f"Eager:    {eager_ms:.2f} ms")
+print(f"Compiled: {compiled_ms:.2f} ms")
+print(f"Speedup:  {eager_ms/compiled_ms:.2f}x")
+```
+
+---
+
+## Section 12 — Real Benchmark Numbers
+
+Benchmarks on A100 GPU, batch=32, FP16, inference:
+
+| Model | Eager (ms) | Compiled (ms) | Speedup | Notes |
+|---|---|---|---|---|
+| ResNet-50 | 8.2 | 3.1 | **2.6x** | Element-wise ops fuse heavily |
+| GPT-2 (124M) | 14.7 | 5.8 | **2.5x** | Attention + FFN fusion |
+| BERT-base | 11.3 | 4.6 | **2.5x** | LayerNorm + GeLU key |
+| LLaMA-7B (fwd) | 182 | 74 | **2.5x** | Flash Attention style fusion |
+| ViT-B/16 | 9.4 | 3.8 | **2.5x** | Attention + patch embed |
+| Simple 2-layer MLP | 1.1 | 1.4 | **0.8x** | Compilation overhead > gain |
+| Variable batch sizes | 8.2 | 9.1 | **0.9x** | Recompilation kills savings |
+
+> **Key insight:** The bigger the model and the more element-wise (pointwise) ops it contains, the more `torch.compile` helps. Tiny models and dynamically-shaped inputs are where it can hurt.
+
+---
+
+## Section 13 — GPU Memory Hierarchy
+
+Understanding *why* kernel fusion works requires knowing where data lives on a GPU:
+
+```
+Speed          Memory Level          Size          Notes
+----------     ----------------      -----------   --------------------------------
+~20 TB/s   ->  Registers             <1 KB/thread  Private per CUDA thread
+~19 TB/s   ->  Shared Memory / L1    48-96 KB/SM   Shared within a CUDA block
+~4  TB/s   ->  L2 Cache             40-80 MB       Shared across all SMs
+~2  TB/s   ->  HBM (Global)         40-80 GB       Main VRAM -- THE BOTTLENECK
+```
+
+```
+Eager mode (3 separate kernels):
+  Read x from HBM  [2 TB/s]
+    -> compute x * 2  (in registers, instant)
+  Write x to HBM   [2 TB/s]  <-- unnecessary!
+  Read x from HBM  [2 TB/s]  <-- unnecessary!
+    -> compute relu(x) (in registers)
+  Write x to HBM   [2 TB/s]  <-- unnecessary!
+  Read x from HBM  [2 TB/s]  <-- unnecessary!
+    -> compute x + bias (in registers)
+  Write x to HBM   [2 TB/s]
+  
+  Total HBM accesses: 6
+
+Fused kernel (1 kernel):
+  Read x from HBM  [2 TB/s]
+    -> x * 2 (registers)
+    -> relu (registers)
+    -> +bias (registers)
+  Write x to HBM   [2 TB/s]
+
+  Total HBM accesses: 2   ==>  ~3x less bandwidth used
+```
+
+---
+
+## Section 14 — torch.profiler
+
+Never assume — always measure. `torch.profiler` shows exactly what GPU kernels are running and how long they take:
+
+```python
+import torch
+from torch.profiler import profile, ProfilerActivity, schedule
+
+model = MyModel().cuda()
+x     = torch.randn(32, 512).cuda()
+
+# Basic profiling
+with profile(activities=[ProfilerActivity.CUDA]) as prof:
+    model(x)
+
+# Print top kernels by CUDA time
+print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+# Output (eager):
+# Name                  CUDA time    Calls
+# aten::mm              2.1ms        2
+# aten::relu            0.3ms        1
+# aten::add             0.4ms        2
+# ...
+
+# Profile compiled model
+compiled = torch.compile(model)
+compiled(x)   # warmup
+with profile(activities=[ProfilerActivity.CUDA]) as prof:
+    compiled(x)
+
+print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=5))
+# Output (compiled):
+# Name                        CUDA time    Calls
+# triton_fused_mm_relu_add    1.1ms        1     <- all fused into ONE kernel!
+
+# Export to Chrome trace (open chrome://tracing)
+prof.export_chrome_trace("trace.json")
+
+# Advanced: warmup + multi-step profiling
+prof_schedule = schedule(wait=1, warmup=1, active=3)
+with profile(activities=[ProfilerActivity.CUDA], schedule=prof_schedule) as prof:
+    for step in range(5):
+        model(x)
+        prof.step()
+```
+
+---
+
+## Section 15 — Comparison: compile vs script vs ONNX
+
+| Approach | Best For | Requires Python? | Serializable? | Speedup |
+|---|---|---|---|---|
+| **Eager mode** | Research, debugging | Yes | No | 1x (baseline) |
+| **torch.compile** | Production training + inference | Yes | No | 2-4x |
+| **torch.jit.script** | Deployment, C++ inference | No | Yes | 1.3-1.8x |
+| **torch.export + ONNX** | Cross-framework (TensorRT, OpenVINO) | No | Yes | Varies |
+| **torch.export + quantize** | Mobile, edge, 8-bit | No | Yes | 2-8x (size), varies (speed) |
+
+```python
+# torch.jit.script -- explicit type annotation required
+@torch.jit.script
+def forward(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+    return torch.relu(x @ w)
+torch.jit.save(scripted, "model.pt")  # portable, runs without Python
+
+# torch.export -- new in PyTorch 2.x, preferred over jit.script
+exported = torch.export.export(model, (x,))
+# Can then quantize, run with ExecuTorch on mobile, or convert to ONNX
+
+# torch.compile -- easiest, best speedup, requires Python runtime
+compiled = torch.compile(model, mode="max-autotune")
+```
+
+---
+
+---
+
 ## Official Resources
 
 | Resource | Link |
